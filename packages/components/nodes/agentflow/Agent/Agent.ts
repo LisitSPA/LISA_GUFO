@@ -62,6 +62,37 @@ interface ISimpliefiedTool {
         label: string
         name: string
     }
+    displayName?: string
+}
+
+const ORIGINAL_TOOL_NAME_PROP = '__flowiseOriginalName'
+
+const sanitizeToolIdentifier = (name: string): string => {
+    if (!name) return ''
+    let sanitized = name.replace(/[\s<|\\/>]+/g, '_')
+    sanitized = sanitized.replace(/[^A-Za-z0-9._-]/g, '_')
+    sanitized = sanitized.replace(/_+/g, '_').replace(/^_+|_+$/g, '')
+    return sanitized
+}
+
+const getUniqueToolName = (proposedName: string, usedNames: Set<string>, fallbackBase: string): string => {
+    const base = sanitizeToolIdentifier(proposedName) || sanitizeToolIdentifier(fallbackBase) || 'tool'
+    let candidate = base
+    let suffix = 2
+
+    while (usedNames.has(candidate)) {
+        candidate = `${base}_${suffix++}`
+    }
+
+    usedNames.add(candidate)
+    return candidate
+}
+
+const sanitizeMessageName = (value?: string, fallback?: string): string | undefined => {
+    const sanitizedValue = value ? sanitizeToolIdentifier(value) : ''
+    if (sanitizedValue) return sanitizedValue
+    const sanitizedFallback = fallback ? sanitizeToolIdentifier(fallback) : ''
+    return sanitizedFallback || undefined
 }
 
 class Agent_Agentflow implements INode {
@@ -559,12 +590,69 @@ class Agent_Agentflow implements INode {
             }
 
             // Extract tools
-            const tools = nodeData.inputs?.agentTools as ITool[]
+            const tools = (nodeData.inputs?.agentTools as ITool[]) || []
 
             const toolsInstance: Tool[] = []
+            const availableTools: ISimpliefiedTool[] = []
+            const usedToolNames = new Set<string>()
+            const componentNodes = options.componentNodes as { [key: string]: INode }
+
+            const agentToolsBuiltInOpenAI = convertMultiOptionsToStringArray(nodeData.inputs?.agentToolsBuiltInOpenAI)
+            if (agentToolsBuiltInOpenAI && agentToolsBuiltInOpenAI.length) {
+                agentToolsBuiltInOpenAI.forEach((name) => usedToolNames.add(name))
+            }
+
+            const agentToolsBuiltInGemini = convertMultiOptionsToStringArray(nodeData.inputs?.agentToolsBuiltInGemini)
+            if (agentToolsBuiltInGemini && agentToolsBuiltInGemini.length) {
+                agentToolsBuiltInGemini.forEach((name) => usedToolNames.add(name))
+            }
+
+            const agentToolsBuiltInAnthropic = convertMultiOptionsToStringArray(nodeData.inputs?.agentToolsBuiltInAnthropic)
+            if (agentToolsBuiltInAnthropic && agentToolsBuiltInAnthropic.length) {
+                agentToolsBuiltInAnthropic.forEach((name) => usedToolNames.add(name))
+            }
+
+            const registerToolInstance = (
+                instance: Tool,
+                componentNodeKey: string,
+                displayNameOverride?: string,
+                descriptionOverride?: string
+            ) => {
+                const componentNode = componentNodes?.[componentNodeKey]
+                const displayName =
+                    displayNameOverride ||
+                    ((instance as any)[ORIGINAL_TOOL_NAME_PROP] as string) ||
+                    instance.name ||
+                    componentNode?.label ||
+                    'tool'
+
+                const safeName = getUniqueToolName(displayName, usedToolNames, componentNodeKey || displayName || 'tool')
+
+                ;(instance as any)[ORIGINAL_TOOL_NAME_PROP] = displayName
+                instance.name = safeName
+
+                const jsonSchema = zodToJsonSchema(instance.schema as any)
+                if (jsonSchema.$schema) {
+                    delete jsonSchema.$schema
+                }
+
+                availableTools.push({
+                    name: safeName,
+                    description: descriptionOverride ?? instance.description,
+                    schema: jsonSchema,
+                    displayName,
+                    toolNode: {
+                        label: componentNode?.label || displayName,
+                        name: componentNode?.name || safeName
+                    }
+                })
+
+                toolsInstance.push(instance)
+            }
+
             for (const tool of tools) {
                 const toolConfig = tool.agentSelectedToolConfig
-                const nodeInstanceFilePath = options.componentNodes[tool.agentSelectedTool].filePath as string
+                const nodeInstanceFilePath = componentNodes[tool.agentSelectedTool].filePath as string
                 const nodeModule = await import(nodeInstanceFilePath)
                 const newToolNodeInstance = new nodeModule.nodeClass()
                 const newNodeData = {
@@ -577,47 +665,22 @@ class Agent_Agentflow implements INode {
                 }
                 const toolInstance = await newToolNodeInstance.init(newNodeData, '', options)
 
-                // toolInstance might returns a list of tools like MCP tools
+                const registerInstance = (instance: Tool) => {
+                    ;(instance as any).agentSelectedTool = tool.agentSelectedTool
+                    if (tool.agentSelectedToolRequiresHumanInput) {
+                        ;(instance as any).requiresHumanInput = true
+                    }
+                    registerToolInstance(instance, tool.agentSelectedTool, instance.name, instance.description)
+                }
+
                 if (Array.isArray(toolInstance)) {
                     for (const subTool of toolInstance) {
-                        const subToolInstance = subTool as Tool
-                        ;(subToolInstance as any).agentSelectedTool = tool.agentSelectedTool
-                        if (tool.agentSelectedToolRequiresHumanInput) {
-                            ;(subToolInstance as any).requiresHumanInput = true
-                        }
-                        toolsInstance.push(subToolInstance)
+                        registerInstance(subTool as Tool)
                     }
                 } else {
-                    if (tool.agentSelectedToolRequiresHumanInput) {
-                        toolInstance.requiresHumanInput = true
-                    }
-                    toolsInstance.push(toolInstance as Tool)
+                    registerInstance(toolInstance as Tool)
                 }
             }
-
-            const availableTools: ISimpliefiedTool[] = toolsInstance.map((tool, index) => {
-                const originalTool = tools[index]
-                let agentSelectedTool = (tool as any)?.agentSelectedTool
-                if (!agentSelectedTool) {
-                    agentSelectedTool = originalTool?.agentSelectedTool
-                }
-                const componentNode = options.componentNodes[agentSelectedTool]
-
-                const jsonSchema = zodToJsonSchema(tool.schema as any)
-                if (jsonSchema.$schema) {
-                    delete jsonSchema.$schema
-                }
-
-                return {
-                    name: tool.name,
-                    description: tool.description,
-                    schema: jsonSchema,
-                    toolNode: {
-                        label: componentNode?.label || tool.name,
-                        name: componentNode?.name || tool.name
-                    }
-                }
-            })
 
             // Extract knowledge
             const knowledgeBases = nodeData.inputs?.agentKnowledgeDocumentStores as IKnowledgeBase[]
@@ -660,27 +723,12 @@ class Agent_Agentflow implements INode {
                         }
                     }
                     const retrieverToolInstance = await newRetrieverToolNodeInstance.init(newRetrieverToolNodeData, '', options)
-
-                    toolsInstance.push(retrieverToolInstance as Tool)
-
-                    const jsonSchema = zodToJsonSchema(retrieverToolInstance.schema)
-                    if (jsonSchema.$schema) {
-                        delete jsonSchema.$schema
-                    }
-                    const componentNode = options.componentNodes['retrieverTool']
-
-                    availableTools.push({
-                        name: storeName
-                            .toLowerCase()
-                            .replace(/ /g, '_')
-                            .replace(/[^a-z0-9_-]/g, ''),
-                        description: knowledgeBase.docStoreDescription,
-                        schema: jsonSchema,
-                        toolNode: {
-                            label: componentNode?.label || retrieverToolInstance.name,
-                            name: componentNode?.name || retrieverToolInstance.name
-                        }
-                    })
+                    registerToolInstance(
+                        retrieverToolInstance as Tool,
+                        'retrieverTool',
+                        (retrieverToolInstance as Tool).name,
+                        knowledgeBase.docStoreDescription
+                    )
                 }
             }
 
@@ -741,27 +789,12 @@ class Agent_Agentflow implements INode {
                         }
                     }
                     const retrieverToolInstance = await newRetrieverToolNodeInstance.init(newRetrieverToolNodeData, '', options)
-
-                    toolsInstance.push(retrieverToolInstance as Tool)
-
-                    const jsonSchema = zodToJsonSchema(retrieverToolInstance.schema)
-                    if (jsonSchema.$schema) {
-                        delete jsonSchema.$schema
-                    }
-                    const componentNode = options.componentNodes['retrieverTool']
-
-                    availableTools.push({
-                        name: knowledgeName
-                            .toLowerCase()
-                            .replace(/ /g, '_')
-                            .replace(/[^a-z0-9_-]/g, ''),
-                        description: knowledgeBase.knowledgeDescription,
-                        schema: jsonSchema,
-                        toolNode: {
-                            label: componentNode?.label || retrieverToolInstance.name,
-                            name: componentNode?.name || retrieverToolInstance.name
-                        }
-                    })
+                    registerToolInstance(
+                        retrieverToolInstance as Tool,
+                        'retrieverTool',
+                        (retrieverToolInstance as Tool).name,
+                        knowledgeBase.knowledgeDescription
+                    )
                 }
             }
 
@@ -795,7 +828,6 @@ class Agent_Agentflow implements INode {
             const llmWithoutToolsBind = (await newLLMNodeInstance.init(newNodeData, '', options)) as BaseChatModel
             let llmNodeInstance = llmWithoutToolsBind
 
-            const agentToolsBuiltInOpenAI = convertMultiOptionsToStringArray(nodeData.inputs?.agentToolsBuiltInOpenAI)
             if (agentToolsBuiltInOpenAI && agentToolsBuiltInOpenAI.length > 0) {
                 for (const tool of agentToolsBuiltInOpenAI) {
                     const builtInTool: ICommonObject = {
@@ -807,6 +839,7 @@ class Agent_Agentflow implements INode {
                     ;(toolsInstance as any).push(builtInTool)
                     ;(availableTools as any).push({
                         name: tool,
+                        displayName: tool,
                         toolNode: {
                             label: tool,
                             name: tool
@@ -815,7 +848,6 @@ class Agent_Agentflow implements INode {
                 }
             }
 
-            const agentToolsBuiltInGemini = convertMultiOptionsToStringArray(nodeData.inputs?.agentToolsBuiltInGemini)
             if (agentToolsBuiltInGemini && agentToolsBuiltInGemini.length > 0) {
                 for (const tool of agentToolsBuiltInGemini) {
                     const builtInTool: ICommonObject = {
@@ -824,6 +856,7 @@ class Agent_Agentflow implements INode {
                     ;(toolsInstance as any).push(builtInTool)
                     ;(availableTools as any).push({
                         name: tool,
+                        displayName: tool,
                         toolNode: {
                             label: tool,
                             name: tool
@@ -832,7 +865,6 @@ class Agent_Agentflow implements INode {
                 }
             }
 
-            const agentToolsBuiltInAnthropic = convertMultiOptionsToStringArray(nodeData.inputs?.agentToolsBuiltInAnthropic)
             if (agentToolsBuiltInAnthropic && agentToolsBuiltInAnthropic.length > 0) {
                 for (const tool of agentToolsBuiltInAnthropic) {
                     // split _ to get the tool name by removing the last part (date)
@@ -861,6 +893,7 @@ class Agent_Agentflow implements INode {
                     ;(toolsInstance as any).push(builtInTool)
                     ;(availableTools as any).push({
                         name: tool,
+                        displayName: tool,
                         toolNode: {
                             label: tool,
                             name: tool
@@ -1229,6 +1262,23 @@ class Agent_Agentflow implements INode {
             }
 
             // Prepare and return the final output
+            const messageName = sanitizeMessageName(nodeData?.label, nodeData?.id)
+            const finalMessage: ICommonObject = {
+                role: returnRole,
+                content: finalResponse,
+                ...(((artifacts && artifacts.length > 0) ||
+                    (fileAnnotations && fileAnnotations.length > 0) ||
+                    (usedTools && usedTools.length > 0)) && {
+                    additional_kwargs: {
+                        ...(artifacts && artifacts.length > 0 && { artifacts }),
+                        ...(fileAnnotations && fileAnnotations.length > 0 && { fileAnnotations }),
+                        ...(usedTools && usedTools.length > 0 && { usedTools })
+                    }
+                })
+            }
+
+            if (messageName) finalMessage.name = messageName
+
             return {
                 id: nodeData.id,
                 name: this.name,
@@ -1245,20 +1295,7 @@ class Agent_Agentflow implements INode {
                     // ...toolCallMessages,
 
                     // End with the final assistant response
-                    {
-                        role: returnRole,
-                        content: finalResponse,
-                        name: nodeData?.label ? nodeData?.label.toLowerCase().replace(/\s/g, '_').trim() : nodeData?.id,
-                        ...(((artifacts && artifacts.length > 0) ||
-                            (fileAnnotations && fileAnnotations.length > 0) ||
-                            (usedTools && usedTools.length > 0)) && {
-                            additional_kwargs: {
-                                ...(artifacts && artifacts.length > 0 && { artifacts }),
-                                ...(fileAnnotations && fileAnnotations.length > 0 && { fileAnnotations }),
-                                ...(usedTools && usedTools.length > 0 && { usedTools })
-                            }
-                        })
-                    }
+                    finalMessage
                 ]
             }
         } catch (error) {
@@ -1772,6 +1809,8 @@ class Agent_Agentflow implements INode {
 
             const selectedTool = toolsInstance.find((tool) => tool.name === toolCall.name)
             if (selectedTool) {
+                const originalToolName =
+                    ((selectedTool as any)[ORIGINAL_TOOL_NAME_PROP] as string) || selectedTool.name || toolCall.name
                 let parsedDocs
                 let parsedArtifacts
                 let isToolRequireHumanInput =
@@ -1855,7 +1894,7 @@ class Agent_Agentflow implements INode {
 
                     // Track used tools
                     usedTools.push({
-                        tool: toolCall.name,
+                        tool: originalToolName,
                         toolInput: toolInput ?? toolCall.args,
                         toolOutput
                     })
@@ -1877,7 +1916,7 @@ class Agent_Agentflow implements INode {
                     }
 
                     usedTools.push({
-                        tool: selectedTool.name,
+                        tool: originalToolName,
                         toolInput,
                         toolOutput: '',
                         error: getErrorMessage(e)
@@ -2081,6 +2120,8 @@ class Agent_Agentflow implements INode {
 
             const selectedTool = toolsInstance.find((tool) => tool.name === toolCall.name)
             if (selectedTool) {
+                const originalToolName =
+                    ((selectedTool as any)[ORIGINAL_TOOL_NAME_PROP] as string) || selectedTool.name || toolCall.name
                 let parsedDocs
                 let parsedArtifacts
 
@@ -2166,7 +2207,7 @@ class Agent_Agentflow implements INode {
 
                         // Track used tools
                         usedTools.push({
-                            tool: toolCall.name,
+                            tool: originalToolName,
                             toolInput: toolInput ?? toolCall.args,
                             toolOutput
                         })
@@ -2188,7 +2229,7 @@ class Agent_Agentflow implements INode {
                         }
 
                         usedTools.push({
-                            tool: selectedTool.name,
+                            tool: originalToolName,
                             toolInput,
                             toolOutput: '',
                             error: getErrorMessage(e)

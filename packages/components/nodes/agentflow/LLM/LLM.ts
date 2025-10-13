@@ -14,6 +14,20 @@ import {
 } from '../utils'
 import { processTemplateVariables } from '../../../src/utils'
 
+const sanitizeMessageName = (value?: string, fallback?: string): string | undefined => {
+    const sanitize = (input: string) =>
+        input
+            .replace(/[\s<|\\/>]+/g, '_')
+            .replace(/[^A-Za-z0-9._-]/g, '_')
+            .replace(/_+/g, '_')
+            .replace(/^_+|_+$/g, '')
+
+    const primary = value ? sanitize(value) : ''
+    if (primary) return primary
+    const secondary = fallback ? sanitize(fallback) : ''
+    return secondary || undefined
+}
+
 class LLM_Agentflow implements INode {
     label: string
     name: string
@@ -568,6 +582,8 @@ class LLM_Agentflow implements INode {
             }
 
             // Prepare and return the final output
+            const messageName = sanitizeMessageName(nodeData?.label, nodeData?.id)
+
             return {
                 id: nodeData.id,
                 name: this.name,
@@ -584,7 +600,7 @@ class LLM_Agentflow implements INode {
                     {
                         role: returnRole,
                         content: finalResponse,
-                        name: nodeData?.label ? nodeData?.label.toLowerCase().replace(/\s/g, '_').trim() : nodeData?.id
+                        ...(messageName && { name: messageName })
                     }
                 ]
             }

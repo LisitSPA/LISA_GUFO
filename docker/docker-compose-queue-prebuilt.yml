@@ -31,6 +31,7 @@ services:
             - DATABASE_USER=${DATABASE_USER}
             - DATABASE_PASSWORD=${DATABASE_PASSWORD}
             - DATABASE_SSL=${DATABASE_SSL}
+            - PGSSLMODE=${PGSSLMODE}
             - DATABASE_SSL_KEY_BASE64=${DATABASE_SSL_KEY_BASE64}
 
             # SECRET KEYS
@@ -175,6 +176,7 @@ services:
             - DATABASE_USER=${DATABASE_USER}
             - DATABASE_PASSWORD=${DATABASE_PASSWORD}
             - DATABASE_SSL=${DATABASE_SSL}
+            - PGSSLMODE=${PGSSLMODE}
             - DATABASE_SSL_KEY_BASE64=${DATABASE_SSL_KEY_BASE64}
 
             # SECRET KEYS

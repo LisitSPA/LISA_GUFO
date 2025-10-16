@@ -25,6 +25,14 @@ services:
             # --- Essential Flowise Vars ---
             - PORT=${PORT:-3000}
             - DATABASE_PATH=/root/.flowise
+            - DATABASE_TYPE=postgres
+            - DATABASE_PORT=5432
+            - DATABASE_HOST=gufo-lisa.postgres.database.azure.com
+            - DATABASE_NAME=flowise
+            - DATABASE_USER=gufoLisaDba
+            - DATABASE_PASSWORD=2KFkP+ee85
+            - DATABASE_SSL=true
+            - PGSSLMODE=require
             - SECRETKEY_PATH=/root/.flowise
             - LOG_PATH=/root/.flowise/logs
             - BLOB_STORAGE_PATH=/root/.flowise/storage
@@ -49,6 +57,14 @@ services:
             # --- Essential Flowise Vars ---
             - WORKER_PORT=${WORKER_PORT:-5566} # Port for worker healthcheck
             - DATABASE_PATH=/root/.flowise
+            - DATABASE_TYPE=postgres
+            - DATABASE_PORT=5432
+            - DATABASE_HOST=gufo-lisa.postgres.database.azure.com
+            - DATABASE_NAME=flowise
+            - DATABASE_USER=gufoLisaDba
+            - DATABASE_PASSWORD=2KFkP+ee85
+            - DATABASE_SSL=true
+            - PGSSLMODE=require
             - SECRETKEY_PATH=/root/.flowise
             - LOG_PATH=/root/.flowise/logs
             - BLOB_STORAGE_PATH=/root/.flowise/storage
